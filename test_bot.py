@@ -1,6 +1,12 @@
+import os
 import unittest
+from datetime import datetime
+
+os.environ.setdefault("TZ", "Europe/Lisbon")
 
 import bot
+
+NOW = 1_700_000_000  # 2023-11-14 22:13:20 UTC / 23:13 Lisbon
 
 
 def account(**over):
@@ -9,14 +15,20 @@ def account(**over):
         "name": "ChatGPT",
         "provider": "chatgpt-sub",
         "plan": "plus",
-        "last_poll": 1_700_000_000,
+        "last_poll": NOW,
         "quotas": [
-            {"window": "5h", "used_percent": 18, "resets_at": 1_700_003_600},
-            {"window": "7d", "used_percent": 3, "resets_at": 1_700_500_000},
+            {"window": "7d", "used_percent": 31, "resets_at": NOW + 6 * 86400},
+            {"window": "5h", "used_percent": 18, "resets_at": NOW + 3600},
         ],
     }
     base.update(over)
     return base
+
+
+def code_block(text):
+    start = text.index("```")
+    end = text.index("```", start + 3)
+    return [line for line in text[start + 3:end].strip("\n").split("\n")]
 
 
 class BarTests(unittest.TestCase):
@@ -36,33 +48,160 @@ class HumanLeftTests(unittest.TestCase):
         self.assertEqual(bot.human_left(6 * 86400 + 3 * 3600), "6d03h")
 
 
+class FormatTests(unittest.TestCase):
+    def test_money_detail(self):
+        self.assertEqual(bot.money_detail("6.48 of 127.50"), "6,48 € de 127,50 €")
+        self.assertEqual(bot.money_detail("qualquer coisa"), "qualquer coisa")
+        self.assertEqual(bot.money_detail(""), "")
+
+    def test_money_detail_currency_override(self):
+        os.environ["CURRENCY"] = "$"
+        try:
+            self.assertEqual(bot.money_detail("1 of 2"), "1,00 $ de 2,00 $")
+        finally:
+            os.environ.pop("CURRENCY", None)
+
+    def test_local_stamp_same_day_vs_other_day(self):
+        self.assertRegex(bot.local_stamp(NOW + 3600, NOW), r"^\d{2}:\d{2}$")
+        self.assertRegex(bot.local_stamp(NOW + 6 * 86400, NOW), r"^\d{2}/\d{2}$")
+
+    def test_windows_are_ordered(self):
+        quotas = bot.ordered_quotas(account(quotas=[
+            {"window": "monthly", "used_percent": 1},
+            {"window": "weekly", "used_percent": 2},
+            {"window": "5h", "used_percent": 3},
+        ]))
+        self.assertEqual([q["window"] for q in quotas], ["5h", "weekly", "monthly"])
+
+    def test_plan_label(self):
+        self.assertEqual(bot.plan_label("go plus"), "Go Plus")
+        self.assertEqual(bot.plan_label("Student"), "Student")
+        self.assertEqual(bot.plan_label(""), "")
+
+
+class AlignmentTests(unittest.TestCase):
+    def test_bars_start_in_the_same_column(self):
+        card = bot.account_card(account(quotas=[
+            {"window": "5h", "used_percent": 1, "resets_at": NOW + 3600},
+            {"window": "weekly", "used_percent": 0, "resets_at": NOW + 86400},
+            {"window": "monthly", "used_percent": 12, "resets_at": NOW + 9 * 86400},
+        ]), NOW)
+        rows = code_block(card)
+        columns = {min(r.index("█"), r.index("░")) if "█" in r else r.index("░") for r in rows}
+        self.assertEqual(len(columns), 1, rows)
+        # And the percentage column is aligned too.
+        pcts = {r.index("%") for r in rows}
+        self.assertEqual(len(pcts), 1, rows)
+
+    def test_labels_are_padded(self):
+        rows = code_block(bot.account_card(account(), NOW))
+        self.assertTrue(rows[0].startswith("5h   "))
+        self.assertTrue(rows[1].startswith("sem  "))
+
+
 class RenderTests(unittest.TestCase):
-    def test_render_account(self):
-        text = bot.render([account()], now=1_700_000_000)
-        self.assertIn("*ChatGPT*", text)
-        self.assertIn("plus", text)
-        self.assertIn("5 horas", text)
-        self.assertIn("82% livre", text)
-        self.assertIn("repõe em", text)
-        self.assertIn("semana", text)
+    def test_summary(self):
+        text, markup = bot.render([account()], now=NOW)
+        self.assertIn("📊 *Consumo*", text)
+        self.assertIn("*ChatGPT · Plus*", text)
+        self.assertIn("actualizado", text)
+        self.assertEqual(len(markup["inline_keyboard"]), 2)
+        self.assertEqual(markup["inline_keyboard"][0][0]["callback_data"], "p:chatgpt-sub")
 
-    def test_detail_and_error(self):
-        text = bot.render([account(last_error="boom", quotas=[
-            {"window": "monthly", "used_percent": 5, "detail": "6.48 of 127.50", "resets_at": 0},
-        ])], now=1_700_000_000)
-        self.assertIn("erro: boom", text)
-        self.assertIn("6.48 of 127.50", text)
-        self.assertNotIn("repõe em", text)
+    def test_tightest_only_when_busy(self):
+        text, _ = bot.render([account()], now=NOW)
+        self.assertNotIn("mais apertado", text)
+        text, _ = bot.render([account(quotas=[{"window": "5h", "used_percent": 62}])], now=NOW)
+        self.assertIn("mais apertado", text)
+        self.assertIn("62% usado", text)
 
-    def test_filter(self):
-        self.assertIn("Não tenho essa conta", bot.render([account()], "mistral-vibe"))
+    def test_provider_view_has_back_button(self):
+        text, markup = bot.render([account()], "chatgpt-sub", now=NOW)
+        self.assertIn("📊 *ChatGPT*", text)
+        self.assertEqual(markup["inline_keyboard"][0][0]["text"], "◀ Voltar")
+
+    def test_unknown_provider(self):
+        text, _ = bot.render([account()], "mistral-vibe", now=NOW)
+        self.assertIn("Não tenho essa conta", text)
 
     def test_empty_tracker(self):
-        self.assertIn("Ainda não há contas", bot.render([]))
+        text, _ = bot.render([], now=NOW)
+        self.assertIn("Ainda não há contas", text)
 
-    def test_escaping(self):
-        text = bot.render([account(name="a_b*c")], now=1_700_000_000)
+    def test_account_without_quotas_shows_spend(self):
+        text, _ = bot.render([account(provider="openrouter", name="OpenRouter", plan="free tier",
+                                      quotas=[], cost_today_usd=0)], now=NOW)
+        self.assertIn("OpenRouter · free tier · $0.00 hoje", text)
+        self.assertNotIn("```", text)
+
+    def test_detail_is_localised(self):
+        text, _ = bot.render([account(provider="mistral-vibe", name="Mistral", plan="Student", quotas=[
+            {"window": "monthly", "used_percent": 5, "detail": "6.48 of 127.50", "resets_at": NOW + 86400},
+        ])], now=NOW)
+        self.assertIn("6,48 € de 127,50 €", text)
+
+    def test_escape(self):
+        text, _ = bot.render([account(name="a_b*c")], now=NOW)
         self.assertIn("a\\_b\\*c", text)
+
+
+class PaceTests(unittest.TestCase):
+    def test_runs_out_before_reset(self):
+        samples = {"1:5h": [[NOW - 3600, 10.0], [NOW, 20.0]]}
+        quota = {"window": "5h", "used_percent": 20, "resets_at": NOW + 86400}
+        self.assertEqual(bot.pace_note(account(), quota, samples, NOW), "100% em 8h00m")
+
+    def test_no_note_when_reset_comes_first(self):
+        samples = {"1:5h": [[NOW - 3600, 10.0], [NOW, 20.0]]}
+        quota = {"window": "5h", "used_percent": 20, "resets_at": NOW + 3600}
+        self.assertEqual(bot.pace_note(account(), quota, samples, NOW), "")
+
+    def test_needs_history(self):
+        quota = {"window": "5h", "used_percent": 20, "resets_at": NOW + 86400}
+        self.assertEqual(bot.pace_note(account(), quota, {"1:5h": [[NOW, 20.0]]}, NOW), "")
+        self.assertEqual(bot.pace_note(account(), quota, {"1:5h": [[NOW - 60, 19.0], [NOW, 20.0]]}, NOW), "")
+
+
+class StateTests(unittest.TestCase):
+    def test_samples_are_kept_per_quota(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            state = bot.State(tmp)
+            state.sample([account()], NOW)
+            state.sample([account()], NOW + 300)
+            key = "1:5h"
+            self.assertEqual([p[1] for p in state.data["samples"][key]], [18.0, 18.0])
+            reloaded = bot.State(tmp)
+            self.assertEqual(len(reloaded.data["samples"][key]), 2)
+
+    def test_allowed_chats(self):
+        self.assertEqual(bot.allowed_chats(""), set())
+        self.assertEqual(bot.allowed_chats("1, 2,-3"), {1, 2, -3})
+        self.assertEqual(bot.allowed_chats("x,4"), {4})
+
+
+class DigestTests(unittest.TestCase):
+    def test_digest_lists_resets_today(self):
+        now = datetime(2026, 11, 16, 9, 0, tzinfo=bot.tzinfo()).timestamp()
+        text = bot.digest([account(quotas=[
+            {"window": "5h", "used_percent": 55, "resets_at": now + 2 * 3600},
+        ])], now)
+        self.assertIn("Resumo", text)
+        self.assertIn("mais apertado", text)
+        self.assertIn("repõe hoje", text)
+        self.assertIn("11:00", text)
+
+
+class ChunkTests(unittest.TestCase):
+    def test_chunks_keep_lines(self):
+        text = "\n".join(f"linha {i}" for i in range(500))
+        parts = bot.chunks(text, 100)
+        self.assertGreater(len(parts), 1)
+        self.assertTrue(all(len(p) <= 100 for p in parts))
+        self.assertEqual("\n".join(parts).split(), text.split())
+
+    def test_short(self):
+        self.assertEqual(bot.chunks("oi", 100), ["oi"])
 
 
 class ApiTests(unittest.TestCase):
@@ -110,29 +249,6 @@ class ApiTests(unittest.TestCase):
 
     def test_403_mentions_cloudflare(self):
         self.assertIn("Cloudflare", self._raise(403))
-
-
-class ChunkTests(unittest.TestCase):
-    def test_chunks_keep_lines(self):
-        text = "\n".join(f"linha {i}" for i in range(500))
-        parts = bot.chunks(text, 100)
-        self.assertGreater(len(parts), 1)
-        self.assertTrue(all(len(p) <= 100 for p in parts))
-        self.assertEqual("\n".join(parts).split(), text.split())
-
-    def test_short(self):
-        self.assertEqual(bot.chunks("oi", 100), ["oi"])
-
-
-class AllowlistTests(unittest.TestCase):
-    def test_parse(self):
-        self.assertEqual(bot.allowed_chats(""), set())
-        self.assertEqual(bot.allowed_chats("1, 2,-3"), {1, 2, -3})
-        self.assertEqual(bot.allowed_chats("x,4"), {4})
-
-    def test_provider_labels(self):
-        self.assertEqual(bot.provider_label({"provider": "mistral-vibe"}), "Mistral Vibe")
-        self.assertEqual(bot.provider_label({"provider": "nope"}), "nope")
 
 
 if __name__ == "__main__":
