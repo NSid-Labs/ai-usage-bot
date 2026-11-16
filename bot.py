@@ -45,6 +45,7 @@ PROVIDER_LABELS = {
     "opencode-console": "OpenCode",
     "mistral-vibe": "Mistral",
     "claude-sub": "Claude",
+    "refuseless": "Refuseless",
     "openrouter": "OpenRouter",
     "anthropic-api": "Anthropic API",
     "openai-api": "OpenAI API",
@@ -226,11 +227,14 @@ def account_card(account: dict, now: float, samples: dict | None = None) -> str:
 
     quotas = ordered_quotas(account)
     if not quotas:
+        balance = account.get("balance_usd")
         today = account.get("cost_today_usd")
-        bits = ["sem quotas"]
-        if today is not None:
-            bits.append(f"${today:.2f} hoje")
-        lines.append(" · ".join(bits))
+        if balance is not None:
+            lines.append(f"saldo ${balance:.2f}")
+        elif today is not None:
+            lines.append(f"sem quotas · ${today:.2f} hoje")
+        else:
+            lines.append("sem quotas")
         return "\n".join(lines)
 
     rows = []
