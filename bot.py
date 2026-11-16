@@ -65,18 +65,26 @@ class TrackerError(RuntimeError):
     pass
 
 
+# Cloudflare in front of the tracker rejects requests whose User-Agent looks like
+# a bare script (python-urllib gets a 403, error 1010), so identify the bot.
+USER_AGENT = "ai-usage-bot/1.0 (+https://github.com/NSid-Labs/ai-usage-bot)"
+
+
 def api_accounts(base_url: str, token: str, timeout: int = 20) -> list[dict]:
     url = base_url.rstrip("/") + "/api/accounts"
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
+        "User-Agent": USER_AGENT,
     })
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            raise TrackerError("o token da API do tracker foi recusado") from exc
+        if exc.code == 401:
+            raise TrackerError("o token da API do tracker foi recusado (401)") from exc
+        if exc.code == 403:
+            raise TrackerError("o tracker recusou o pedido (403) — token sem permissão ou bloqueio do Cloudflare") from exc
         raise TrackerError(f"o tracker respondeu HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise TrackerError(f"não consegui falar com o tracker ({exc.reason})") from exc
