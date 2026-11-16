@@ -134,6 +134,13 @@ class RenderTests(unittest.TestCase):
         self.assertIn("sem quotas · $0.00 hoje", text)
         self.assertNotIn("```", text)
 
+    def test_credit_account_shows_balance(self):
+        text, _ = bot.render([account(provider="refuseless", name="Refuseless", plan=None,
+                                      quotas=[], balance_usd=2.89)], now=NOW)
+        self.assertIn("*Refuseless*", text)
+        self.assertIn("saldo $2.89", text)
+        self.assertNotIn("sem quotas", text)
+
     def test_detail_is_localised(self):
         text, _ = bot.render([account(provider="mistral-vibe", name="Mistral", plan="Student", quotas=[
             {"window": "monthly", "used_percent": 5, "detail": "6.48 of 127.50", "resets_at": NOW + 86400},
