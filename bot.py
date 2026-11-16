@@ -227,8 +227,10 @@ def account_card(account: dict, now: float, samples: dict | None = None) -> str:
     quotas = ordered_quotas(account)
     if not quotas:
         today = account.get("cost_today_usd")
-        extra = f" · ${today:.2f} hoje" if today is not None else ""
-        lines.append(f"{escape(heading(account))}{extra}")
+        bits = ["sem quotas"]
+        if today is not None:
+            bits.append(f"${today:.2f} hoje")
+        lines.append(" · ".join(bits))
         return "\n".join(lines)
 
     rows = []

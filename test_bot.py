@@ -131,7 +131,7 @@ class RenderTests(unittest.TestCase):
     def test_account_without_quotas_shows_spend(self):
         text, _ = bot.render([account(provider="openrouter", name="OpenRouter", plan="free tier",
                                       quotas=[], cost_today_usd=0)], now=NOW)
-        self.assertIn("OpenRouter · free tier · $0.00 hoje", text)
+        self.assertIn("sem quotas · $0.00 hoje", text)
         self.assertNotIn("```", text)
 
     def test_detail_is_localised(self):
