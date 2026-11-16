@@ -65,6 +65,53 @@ class RenderTests(unittest.TestCase):
         self.assertIn("a\\_b\\*c", text)
 
 
+class ApiTests(unittest.TestCase):
+    def setUp(self):
+        self._old = bot.urllib.request.urlopen
+
+    def tearDown(self):
+        bot.urllib.request.urlopen = self._old
+
+    def test_sends_bot_user_agent_and_parses(self):
+        captured = {}
+
+        class Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'[{"id":1}]'
+
+        def fake(req, timeout=None):
+            captured["url"] = req.full_url
+            captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return Resp()
+
+        bot.urllib.request.urlopen = fake
+        self.assertEqual(bot.api_accounts("https://x/", "tok"), [{"id": 1}])
+        self.assertEqual(captured["url"], "https://x/api/accounts")
+        self.assertEqual(captured["headers"]["authorization"], "Bearer tok")
+        # Cloudflare blocks a bare python-urllib UA with 403/1010.
+        self.assertIn("ai-usage-bot", captured["headers"]["user-agent"])
+
+    def _raise(self, code):
+        def fake(req, timeout=None):
+            raise bot.urllib.error.HTTPError(req.full_url, code, "nope", {}, None)
+        bot.urllib.request.urlopen = fake
+        with self.assertRaises(bot.TrackerError) as ctx:
+            bot.api_accounts("https://x", "tok")
+        return str(ctx.exception)
+
+    def test_401_is_a_token_problem(self):
+        self.assertIn("401", self._raise(401))
+
+    def test_403_mentions_cloudflare(self):
+        self.assertIn("Cloudflare", self._raise(403))
+
+
 class ChunkTests(unittest.TestCase):
     def test_chunks_keep_lines(self):
         text = "\n".join(f"linha {i}" for i in range(500))
